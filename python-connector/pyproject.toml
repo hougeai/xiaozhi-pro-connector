@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xiaozhi-pro-connector"
+version = "1.0.0"
+description = "XiaozhiPro Agent Connector: bridge local ACP agents to XiaozhiPro Agent Gateway"
+requires-python = ">=3.10"
+dependencies = ["websockets>=15.0.1,<16"]
+
+[project.scripts]
+xiaozhi-pro-connector = "connector:cli"
+
+[tool.setuptools]
+py-modules = ["connector"]
