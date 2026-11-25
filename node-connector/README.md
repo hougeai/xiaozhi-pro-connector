@@ -1,6 +1,6 @@
 # XiaozhiPro Connector (Node)
 
-Node 版实现，发布为 npm 包 `xiaozhi-pro-connector`。
+Node 版实现，发布为 npm 包 `@xiaozhi-pro/connector`。
 
 安装、运行、API Key、自动探测和通信接口见 [../README.md](../README.md)。
 
@@ -10,6 +10,7 @@ Node 版实现，发布为 npm 包 `xiaozhi-pro-connector`。
 node-connector/
 ├── package.json
 ├── README.md
+├── publish.md
 ├── LICENSE
 ├── bin/
 │   └── xiaozhi-pro-connector.js
@@ -30,6 +31,7 @@ node-connector/
 | 文件 | 作用 |
 | --- | --- |
 | `package.json` | npm 包配置、依赖、`bin` 命令、发布文件白名单 |
+| `publish.md` | npm 发布流程 |
 | `bin/xiaozhi-pro-connector.js` | CLI 入口，调用 `src/cli.js` |
 | `src/cli.js` | 参数解析、自动探测、启动多个 Connector |
 | `src/detection.js` | 探测本地 Agent，组装启动命令、参数和环境变量 |

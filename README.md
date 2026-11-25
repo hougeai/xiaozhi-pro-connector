@@ -5,17 +5,25 @@
 ![Protocol](https://img.shields.io/badge/protocol-ACP-blue)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)
 
-把本地 Agent 接入小智Pro的适配器。
+[小智（xiaozhi-esp32）](https://github.com/78/xiaozhi-esp32)实现了设备端的实时语音对话，低延迟、即说即答。
 
-支持 OpenClaw、Hermes、Codex、Claude Code、Qwen Code、OpenCode、Qoder、MiniMax Code、Kimi Code、CodeBuddy、DeepSeek Harness、Pi。
+[小智Pro](https://github.com/hougeai/xiaozhiPro) 在小智的基础上，给语音助手装上了 MCP 工具箱，语音即指令，开口即干活。
+
+与此同时，本地 Agent（Claude Code、Codex 等）发展迅速，推理和执行能力强，却缺少一个语音入口。
+
+如何把二者结合起来？让设备端负责语音交互，本地 Agent 负责复杂任务，这就是本项目的出发点。
+
+本项目就是把本地 Agent 接入小智的适配器。
 
 小智Pro 负责设备、语音前端、鉴权和回复投递；Connector 在用户本地自动探测已安装的 Agent，通过 ACP stdio 拉起，再桥接到小智Pro Agent Gateway。
+
+目前已支持的主流 Agent 有：OpenClaw、Hermes、Codex、Claude Code、Qwen Code、OpenCode、Qoder、MiniMax Code、Kimi Code、CodeBuddy、DeepSeek Harness、Pi。
 
 ## 为什么需要 Connector
 
 - 小智Pro 维护一套 Agent WebSocket 协议，不再为 OpenClaw、Hermes 等分别写适配器。
 - 用户本地装了什么 Agent，就自动接入什么 Agent。
-- 一个 Connector 进程可以同时接入多个 Agent，每个 Agent 独立 `agent_id`、独立 ACP 子进程。
+- 一个 Connector 进程可以同时接入多个 Agent，每个 Agent 独立 ACP 子进程。
 
 ## 架构
 
@@ -24,7 +32,7 @@ ESP32 / 小智设备
        |
        | 文本指令 / 回复取回
        v
-小智Pro SaaS Agent Gateway
+XiaozhiPro Agent Gateway
        |
        | WebSocket: /api/v1/agent/ws?agent_id=xxx
        v
@@ -54,7 +62,7 @@ OpenClaw / Hermes / Codex / Claude Code / Qwen Code / ...
 ### Node.js / npm
 
 ```bash
-npm install -g xiaozhi-pro-connector
+npm install -g @xiaozhi-pro/connector
 export XIAOZHI_PRO_KEY=你的API密钥
 xiaozhi-pro-connector
 ```
@@ -152,6 +160,7 @@ xiaozhi-pro-connector/
 ├── node-connector/
 │   ├── README.md
 │   ├── package.json
+│   ├── publish.md
 │   ├── bin/
 │   │   └── xiaozhi-pro-connector.js
 │   ├── src/
@@ -179,10 +188,16 @@ Connector 连接：
 GET /api/v1/agent/ws?token=<API_KEY>&agent_id=<agent_id>
 ```
 
+设备发消息：
+
+```text
+POST /agent_send?agent_id=xxx
+```
+
 设备取回复：
 
 ```text
-/agent_retrieve?agent_id=xxx
+GET /agent_retrieve?agent_id=xxx
 ```
 
 ## License

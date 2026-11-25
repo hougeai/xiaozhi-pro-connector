@@ -1,16 +1,17 @@
 {
-  "name": "xiaozhi-pro-connector",
+  "name": "@xiaozhi-pro/connector",
   "version": "1.0.0",
   "description": "XiaozhiPro Agent Connector: bridge local ACP agents to XiaozhiPro Agent Gateway",
   "type": "module",
   "license": "Apache-2.0",
   "bin": {
-    "xiaozhi-pro-connector": "./bin/xiaozhi-pro-connector.js"
+    "xiaozhi-pro-connector": "bin/xiaozhi-pro-connector.js"
   },
   "files": [
     "bin",
     "src",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
     "start": "node ./bin/xiaozhi-pro-connector.js",
