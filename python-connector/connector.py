@@ -523,7 +523,7 @@ def collect_targets(permission_mode: str = 'native', extra_args: Optional[list[s
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='小智Pro Agent Connector')
-    parser.add_argument('--token', default=os.getenv('XIAOZHI_PRO_KEY', ''), help='小智Pro API Key')
+    parser.add_argument('--token', default=os.getenv('XIAOZHI_PRO_TOKEN', ''), help='小智Pro API Key')
     parser.add_argument('--command', default='', help=argparse.SUPPRESS)
     parser.add_argument('--cwd', default=os.getcwd(), help=argparse.SUPPRESS)
     parser.add_argument('--permission-mode', choices=['native', 'full'], default='native', help=argparse.SUPPRESS)
@@ -533,7 +533,7 @@ def parse_args() -> argparse.Namespace:
     if args.agent_args and args.agent_args[0] == '--':
         args.agent_args = args.agent_args[1:]
     if not args.token:
-        parser.error('缺少 --token 或环境变量 XIAOZHI_PRO_KEY')
+        parser.error('缺少 --token 或环境变量 XIAOZHI_PRO_TOKEN')
 
     if args.command:
         args.targets = [{

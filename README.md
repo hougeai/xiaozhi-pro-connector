@@ -63,7 +63,7 @@ OpenClaw / Hermes / Codex / Claude Code / Qwen Code / ...
 
 ```bash
 npm install -g @xiaozhi-pro/connector
-export XIAOZHI_PRO_KEY=你的API密钥
+export XIAOZHI_PRO_TOKEN=你的API密钥
 xiaozhi-pro-connector
 ```
 
@@ -72,7 +72,7 @@ xiaozhi-pro-connector
 ```bash
 cd python-connector
 uv sync
-export XIAOZHI_PRO_KEY=你的API密钥
+export XIAOZHI_PRO_TOKEN=你的API密钥
 uv run xiaozhi-pro-connector
 ```
 
@@ -83,7 +83,7 @@ uv run xiaozhi-pro-connector
 Linux / macOS：
 
 ```bash
-export XIAOZHI_PRO_KEY=你的API密钥
+export XIAOZHI_PRO_TOKEN=你的API密钥
 
 # 启动
 nohup xiaozhi-pro-connector >> connector.log 2>&1 &
@@ -95,7 +95,7 @@ pkill -f xiaozhi-pro-connector
 Windows PowerShell：
 
 ```powershell
-$env:XIAOZHI_PRO_KEY='你的API密钥'
+$env:XIAOZHI_PRO_TOKEN='你的API密钥'
 
 # 启动
 Start-Process xiaozhi-pro-connector -WindowStyle Hidden -RedirectStandardOutput connector.log -RedirectStandardError connector.err.log
@@ -109,7 +109,7 @@ Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'xiaozhi-pr
 Linux / macOS：
 
 ```bash
-export XIAOZHI_PRO_KEY=你的API密钥
+export XIAOZHI_PRO_TOKEN=你的API密钥
 
 # 启动
 nohup uv run xiaozhi-pro-connector >> connector.log 2>&1 &
@@ -121,7 +121,7 @@ pkill -f xiaozhi-pro-connector
 Windows PowerShell：
 
 ```powershell
-$env:XIAOZHI_PRO_KEY='你的API密钥'
+$env:XIAOZHI_PRO_TOKEN='你的API密钥'
 
 # 启动
 Start-Process uv -ArgumentList 'run','xiaozhi-pro-connector' -WindowStyle Hidden -RedirectStandardOutput connector.log -RedirectStandardError connector.err.log
@@ -132,7 +132,7 @@ Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'xiaozhi-pr
 
 ## 支持的 Agent
 
-| Agent | 接入方式 |
+| Agent | 本地命令（自动探测，无需手动执行） |
 | --- | --- |
 | OpenClaw | `openclaw acp` |
 | Hermes | `hermes acp --accept-hooks` |

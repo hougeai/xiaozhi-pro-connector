@@ -1,6 +1,6 @@
 {
   "name": "@xiaozhi-pro/connector",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "XiaozhiPro Agent Connector: bridge local ACP agents to XiaozhiPro Agent Gateway",
   "type": "module",
   "license": "Apache-2.0",

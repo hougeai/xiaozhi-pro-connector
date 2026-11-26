@@ -2,13 +2,13 @@ import { AGENT_LABELS, AGENT_ORDER, collectTargets } from './detection.js';
 import { Connector } from './connector.js';
 import { log } from './log.js';
 
-const VERSION = '1.0.0';
+const VERSION = '1.0.1';
 const SERVER = 'wss://api.qlcloud.top/xzp';
 
 const HELP = `Usage: xiaozhi-pro-connector [options]
 
 Options:
-  --token <token>          小智Pro API Key，也可用 XIAOZHI_PRO_KEY
+  --token <token>          小智Pro API Key，也可用 XIAOZHI_PRO_TOKEN
   -h, --help               显示帮助
   -v, --version            显示版本
 `;
@@ -16,7 +16,7 @@ Options:
 function parseArgs(argv) {
   const opts = {
     server: SERVER,
-    token: process.env.XIAOZHI_PRO_KEY || '',
+    token: process.env.XIAOZHI_PRO_TOKEN || '',
     cwd: process.cwd(),
     permission_mode: 'native',
     command: '',
@@ -85,7 +85,7 @@ async function main() {
     return 0;
   }
   if (!opts.token) {
-    console.error('缺少 --token 或环境变量 XIAOZHI_PRO_KEY');
+    console.error('缺少 --token 或环境变量 XIAOZHI_PRO_TOKEN');
     return 1;
   }
 
