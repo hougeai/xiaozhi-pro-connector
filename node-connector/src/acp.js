@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
 import { log } from './log.js';
+import { VERSION } from './version.js';
 
 const PROTOCOL_VERSION = 1;
 const STDERR_LIMIT = 12000;
@@ -72,7 +73,7 @@ export class ACPProcess {
       {
         protocolVersion: PROTOCOL_VERSION,
         clientCapabilities: { elicitation: { form: {} } },
-        clientInfo: { name: 'xiaozhi-pro-connector', version: '1.0.0' },
+        clientInfo: { name: 'xiaozhi-pro-connector', version: VERSION },
       },
       15000,
     );

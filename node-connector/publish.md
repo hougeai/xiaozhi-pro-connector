@@ -30,6 +30,8 @@ registry=https://registry.npmjs.org
 npm test
 ```
 
+`npm publish` 会自动先跑一遍（`prepublishOnly` 钩子），测试失败则发布中止，此步可跳过；想提前发现问题或单独调试时再手动跑。
+
 ## 4. 升版本（代码有更新时才需要，首次发布跳过）
 
 ```bash
@@ -37,6 +39,8 @@ npm version patch
 ```
 
 patch=修bug，minor=加功能，major=破坏性变更。npm 禁止重发同版本号，代码改了必须先升版本。
+
+Node 侧版本号唯一来源是 `package.json`（`src/version.js` 读取它），不用再改别处；Python 侧要同步改 `../python-connector/pyproject.toml` 的 `version`。
 
 ## 5. 检查发布内容
 

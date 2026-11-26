@@ -23,6 +23,12 @@ except ImportError:
     sys.exit('缺少依赖 websockets，请先执行: uv sync')
 
 PROTOCOL_VERSION = 1
+try:  # 版本号唯一来源：包元数据（pyproject.toml）。取不到说明是未安装直接跑源码，不写死版本号
+    from importlib.metadata import version as _pkg_version
+
+    CONNECTOR_VERSION = _pkg_version('xiaozhi-pro-connector')
+except Exception:
+    CONNECTOR_VERSION = '0.0.0+unknown'
 RECONNECT_DELAY = 5
 STDERR_LIMIT = 12000
 SESSION_TIMEOUT = 60
@@ -72,7 +78,7 @@ class ACPProcess:
             {
                 'protocolVersion': PROTOCOL_VERSION,
                 'clientCapabilities': {'elicitation': {'form': {}}},
-                'clientInfo': {'name': 'xiaozhi-pro-connector', 'version': '1.0.0'},
+                'clientInfo': {'name': 'xiaozhi-pro-connector', 'version': CONNECTOR_VERSION},
             },
             timeout=15,
         )

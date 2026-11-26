@@ -1,8 +1,7 @@
 import { AGENT_LABELS, AGENT_ORDER, collectTargets } from './detection.js';
 import { Connector } from './connector.js';
 import { log } from './log.js';
-
-const VERSION = '1.0.1';
+import { VERSION } from './version.js';
 const SERVER = 'wss://api.qlcloud.top/xzp';
 
 const HELP = `Usage: xiaozhi-pro-connector [options]
