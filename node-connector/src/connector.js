@@ -21,20 +21,25 @@ export class Connector {
     this.messageResolver = null;
     this.promptAbort = null;
     this.stopped = false;
+    this.fatal = '';
   }
 
   async run() {
-    while (!this.stopped) {
+    while (!this.stopped && !this.fatal) {
       try {
         await this.agent.start();
         await this._connect();
       } catch (err) {
         if (this.stopped) break;
+        if (this.fatal) {
+          log(`${this.agentId} 接入失败: ${this.fatal}`);
+          break;
+        }
         log(`${this.agentId} 连接异常: ${err.message}`);
       } finally {
         await this.agent.stop().catch(() => {});
       }
-      if (!this.stopped) await sleep(this.reconnectDelay);
+      if (!this.stopped && !this.fatal) await sleep(this.reconnectDelay);
     }
   }
 
@@ -127,7 +132,11 @@ export class Connector {
     if (!data || typeof data !== 'object') return;
     const type = data.type;
     if (type === 'auth_ok') return;
-    if (type === 'auth_fail') throw new Error(data.message || '鉴权失败');
+    if (type === 'auth_fail') {
+      // agent_busy：该 Agent 已在其他机器接入，重试不可能成功，直接退出该 Agent 的连接循环
+      if (data.error === 'agent_busy') this.fatal = data.message || '该 Agent 已在其他机器接入';
+      throw new Error(data.message || '鉴权失败');
+    }
     if (type === 'ping') {
       await this.send({ type: 'pong' });
       return;

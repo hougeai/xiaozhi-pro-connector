@@ -237,20 +237,26 @@ class Connector:
         self.ws = None
         self.ws_lock = asyncio.Lock()
         self.prompt_queue: asyncio.Queue = asyncio.Queue()
+        self.fatal = ''
 
     async def run(self) -> None:
         self.agent.on_notification = self.send
-        while True:
+        while not self.fatal:
             try:
                 await self.agent.start()
                 await self._connect()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                if self.fatal:
+                    log(f'接入失败: {self.fatal}')
+                    break
                 log(f'连接异常: {exc}')
             finally:
                 await self.agent.stop()
                 self.ws = None
+            if self.fatal:
+                break
             await asyncio.sleep(RECONNECT_DELAY)
 
     async def _connect(self) -> None:
@@ -300,6 +306,9 @@ class Connector:
         if msg_type == 'auth_ok':
             return
         if msg_type == 'auth_fail':
+            # agent_busy：该 Agent 已在其他机器接入，重试不可能成功，停止本 Agent 的重连循环
+            if data.get('error') == 'agent_busy':
+                self.fatal = data.get('message') or '该 Agent 已在其他机器接入'
             raise RuntimeError(f"鉴权失败: {data.get('message')}")
         if msg_type == 'ping':
             await self.send({'type': 'pong'})

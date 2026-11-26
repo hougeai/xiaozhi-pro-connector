@@ -48,6 +48,7 @@ OpenClaw / Hermes / Codex / Claude Code / Qwen Code / ...
 
 - 自动探测本地 Agent，无需手工配置启动命令
 - 支持同时接入多个 Agent，互不覆盖连接
+- 多台机器可分别接入不同 Agent；同一 Agent 同时只允许一台机器接入，第二台收到明确提示后退出，不会互踢
 - ACP stdio ↔ WebSocket 双向桥接
 - 支持 Node.js / npm 和 Python / uv 两种运行方式
 - 跨平台：macOS / Linux / Windows
@@ -129,6 +130,24 @@ Start-Process uv -ArgumentList 'run','xiaozhi-pro-connector' -WindowStyle Hidden
 # 停止
 Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'xiaozhi-pro-connector' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 ```
+
+## 多台机器接入
+
+同一 API 密钥可以在多台机器上分别运行 Connector，按 Agent 分工：
+
+```bash
+# 机器 A：装了 Claude Code、Codex
+export XIAOZHI_PRO_TOKEN=你的API密钥
+xiaozhi-pro-connector
+
+# 机器 B：装了 OpenClaw、Hermes
+export XIAOZHI_PRO_TOKEN=你的API密钥
+xiaozhi-pro-connector
+```
+
+- 每台机器只接入本机探测到的 Agent，两台机器的连接互不影响，设备侧都能语音指挥
+- 同一个 Agent 同时只允许一台机器接入；第二台会提示「已在其他机器接入」并退出，不会与第一台互踢
+- 换机器前先停掉原机器上的 Connector；否则原连接要等 60 秒心跳超时失效，新机器才能接管
 
 ## 支持的 Agent
 
