@@ -166,6 +166,8 @@ xiaozhi-pro-connector
 | DeepSeek Harness | `dsh --profile acp` |
 | Pi | `pi-acp` / `npx -y pi-acp@latest` |
 
+注：桌面版 WorkBuddy 的底层是就是 CodeBuddy，装上命令行版本一样能接进来。
+
 ## 文档
 
 - Node 版安装、运行、配置：[node-connector/README.md](node-connector/README.md)
