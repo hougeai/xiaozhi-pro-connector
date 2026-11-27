@@ -8,6 +8,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -31,6 +32,7 @@ except Exception:
     CONNECTOR_VERSION = '0.0.0+unknown'
 RECONNECT_DELAY = 5
 STDERR_LIMIT = 12000
+AGENT_DEBUG = os.getenv('AGENT_DEBUG') == '1'
 SESSION_TIMEOUT = 60
 SERVER_URL = 'wss://api.qlcloud.top/xzp'
 
@@ -84,6 +86,11 @@ class ACPProcess:
         )
         if result.get('protocolVersion') != PROTOCOL_VERSION:
             raise RuntimeError(f"ACP 协议版本不兼容: {result.get('protocolVersion')}")
+        # 每次新进程都要重建 session，否则重连后会沿用上一个已退出进程的 session_id
+        self.session_id = None
+        self.current_text = []
+        self.active_message_id = None
+        self.active_device_id = ''
         log('ACP initialize 完成')
 
     async def ensure_session(self) -> str:
@@ -169,8 +176,10 @@ class ACPProcess:
             line = await self.proc.stderr.readline()
             if not line:
                 break
-            self.stderr_tail = (self.stderr_tail + line.decode('utf-8', errors='replace').strip() + '\n')[-STDERR_LIMIT:]
-            log(f'agent: {line.decode("utf-8", errors="replace").strip()}')
+            text = line.decode('utf-8', errors='replace').strip()
+            self.stderr_tail = (self.stderr_tail + text + '\n')[-STDERR_LIMIT:]
+            if AGENT_DEBUG:
+                log(f'agent: {text}')
 
     async def _handle_message(self, message: dict) -> None:
         request_id = message.get('id')
@@ -207,11 +216,11 @@ class ACPProcess:
         return text
 
     async def _handle_update(self, params: dict) -> None:
-        if not self.on_notification:
-            return
         update = params.get('update', {})
+        # _extract_text 必须无条件调用，它负责把 agent_message_chunk 累积进 current_text，
+        # 最终回复就靠它；只有「转发流式碎片」这一步是可选的
         text = self._extract_text(update)
-        if text:
+        if text and self.on_notification:
             await self.on_notification(
                 {
                     'type': 'update',
@@ -244,9 +253,13 @@ class Connector:
         self.ws_lock = asyncio.Lock()
         self.prompt_queue: asyncio.Queue = asyncio.Queue()
         self.fatal = ''
+        self.authed = False
 
     async def run(self) -> None:
-        self.agent.on_notification = self.send
+        # 不挂 on_notification，即不向服务端转发 ACP 的 session/update 流式碎片。
+        # 本场景只需要 Agent 的最终回复，服务端也会丢弃这些碎片（agent_gateway._message_loop 里 update 分支是 pass），
+        # 一个长回复能产生数百条无效 WS 消息。将来要做控制台流式打字效果时，
+        # 恢复这里的赋值，并在服务端把 update 写入对应 message_id 的记录即可。
         while not self.fatal:
             try:
                 await self.agent.start()
@@ -271,7 +284,16 @@ class Connector:
         log(f'连接 Agent Gateway: {self.args.server} agent_id={self.args.agent_id}')
         async with websockets.connect(url, max_size=None, open_timeout=10) as ws:
             self.ws = ws
-            log(f'连接成功: agent_id={self.args.agent_id}')
+            self.authed = False
+            # 必须先读鉴权结果再发 register：服务端 accept 后立即回 auth_ok/auth_fail，
+            # 密钥错误时它还紧接着关闭连接。此时先 send 会在已关闭的连接上抛 ConnectionClosed，
+            # 把缓冲里的 auth_fail 丢掉，表现成「连接异常 + 无限重连」
+            first = await asyncio.wait_for(ws.recv(), timeout=10)
+            await self._handle_server_message(first if isinstance(first, str) else first.decode())
+            # 成功日志由 auth_ok 触发，握手完成不代表鉴权通过
+            # register：向服务端自报身份与能力。连接归属其实已由 URL 上的 token + agent_id 确定，
+            # 服务端当前对 register 只 continue（见 agent_gateway._message_loop），
+            # 保留它是为了协议完整性，以及将来按 capabilities 做能力协商。
             await self.send(
                 {
                     'type': 'register',
@@ -299,6 +321,9 @@ class Connector:
 
     async def send(self, payload: dict) -> None:
         if not self.ws:
+            # 回复与错误是有业务含义的消息，静默丢弃会让用户以为 Agent 没回，这里留一条日志
+            if payload.get('type') in ('response', 'error'):
+                log(f"{payload['type']} 未发送：连接不可用")
             return
         async with self.ws_lock:
             await self.ws.send(json.dumps(payload, ensure_ascii=False, separators=(',', ':')))
@@ -310,12 +335,15 @@ class Connector:
             return
         msg_type = data.get('type')
         if msg_type == 'auth_ok':
+            if not self.authed:
+                self.authed = True
+                log(f'连接成功: agent_id={self.args.agent_id}')
             return
         if msg_type == 'auth_fail':
-            # agent_busy：该 Agent 已在其他机器接入，重试不可能成功，停止本 Agent 的重连循环
-            if data.get('error') == 'agent_busy':
-                self.fatal = data.get('message') or '该 Agent 已在其他机器接入'
-            raise RuntimeError(f"鉴权失败: {data.get('message')}")
+            # 鉴权类失败（密钥无效、配额不足、该 Agent 已在其他机器接入）都不可能靠重试解决，
+            # 一律标记致命并退出该 Agent 的循环，避免无限重连和反复拉起子进程
+            self.fatal = data.get('message') or f"鉴权失败（{data.get('error')}）"
+            raise RuntimeError(self.fatal)
         if msg_type == 'ping':
             await self.send({'type': 'pong'})
         elif msg_type == 'message':
@@ -355,13 +383,19 @@ class Connector:
         self.agent.active_message_id = message_id
         self.agent.active_device_id = device_id
         self.agent.current_text = []
-        log(f"收到任务: agent_id={self.args.agent_id} message_id={message_id} device_id={device_id or '-'}")
+        # 换行换成空格再截，否则日志会被拆成多行难以阅读
+        ask = re.sub(r'[\r\n]+', ' ', text)
+        log(
+            f"收到任务: agent_id={self.args.agent_id} message_id={message_id} device_id={device_id or '-'} "
+            f"text={ask[:10]}{'...' if len(ask) > 10 else ''}"
+        )
         result = await self.agent.request(
             'session/prompt',
             {'sessionId': session_id, 'prompt': [{'type': 'text', 'text': text}]},
         )
         if not ''.join(self.agent.current_text).strip():
-            for block in result.get('content', []):
+            content = result.get('content') or []
+            for block in content if isinstance(content, list) else [content]:
                 if isinstance(block, dict) and block.get('type') == 'text':
                     self.agent.current_text.append(str(block.get('text', '')))
         stop_reason = result.get('stopReason', 'end_turn')
@@ -378,8 +412,8 @@ class Connector:
             )
             return
         final_text = ''.join(self.agent.current_text).strip()
-        preview = ' '.join(final_text[:10].split())
-        log(f'回复完成: agent_id={self.args.agent_id} message_id={message_id} response={preview}...')
+        answer = re.sub(r'[\r\n]+', ' ', final_text)
+        log(f'回复完成: agent_id={self.args.agent_id} message_id={message_id} response={answer[:10]}{"..." if len(answer) > 10 else ""}')
         await self.send(
             {'type': 'response', 'text': final_text, 'role': 'agent', 'device_id': device_id, 'message_id': message_id}
         )
@@ -398,8 +432,9 @@ def _find_executable(command: str, env_names: str | tuple[str, ...] = ()) -> str
             return path
 
     candidates: list[str] = []
+    nvm_dir = Path(os.getenv('NVM_DIR') or (Path.home() / '.nvm')) / 'versions' / 'node'
     for root in (
-        Path.home() / '.nvm/versions/node',
+        nvm_dir,
         Path.home() / '.npm-global/bin',
         Path.home() / '.bun/bin',
         Path('/opt/homebrew/bin'),
@@ -536,19 +571,133 @@ def collect_targets(permission_mode: str = 'native', extra_args: Optional[list[s
     return targets
 
 
+# 配置文件统一放用户 home 下的 .xiaozhi-pro，三个平台路径规则一致：
+#   Linux   /home/<用户名>/.xiaozhi-pro/connector.json
+#   macOS   /Users/<用户名>/.xiaozhi-pro/connector.json
+#   Windows C:\Users\<用户名>\.xiaozhi-pro\connector.json
+CONFIG_DIR = Path.home() / '.xiaozhi-pro'
+CONFIG_PATH = CONFIG_DIR / 'connector.json'
+
+
+def load_config() -> Optional[list[str]]:
+    try:
+        data = json.loads(CONFIG_PATH.read_text(encoding='utf-8'))
+    except Exception:
+        return None
+    agents = data.get('agents')
+    return agents if isinstance(agents, list) else None
+
+
+def save_config(agents: list[str]) -> None:
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    CONFIG_PATH.write_text(json.dumps({'agents': agents}, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+    log(f'已保存 Agent 选择到 {CONFIG_PATH}')
+
+
+def prompt_targets(targets: list[dict]) -> list[str]:
+    print('\n检测到以下 Agent，选择要接入小智的（输入编号，多个用逗号分隔，直接回车全选）：\n')
+    # 括号里给 agent id，与 --agents 的取值一致；启动路径在探测日志里已经打过，这里不重复
+    for index, target in enumerate(targets, 1):
+        print(f'  {index}. {target["name"]}  ({target["agent_id"]})')
+    answer = input('\n> ').strip()
+    if not answer:
+        return [target['agent_id'] for target in targets]
+    picked = []
+    # 提示只教逗号，解析顺带吃全角逗号与空格，避免输入法差异被判成无效输入
+    for raw in re.split(r'[,，\s]+', answer.strip()):
+        if raw.isdigit() and 1 <= int(raw) <= len(targets):
+            picked.append(targets[int(raw) - 1]['agent_id'])
+    return list(dict.fromkeys(picked))
+
+
+def announce(chosen: list[dict], source: str = '') -> None:
+    # 空选择由调用方报错退出，这里不再打一条「接入 0 个」的噪音日志
+    if not chosen:
+        return
+    prefix = f'{source}，' if source else ''
+    log(f'{prefix}本次接入 {len(chosen)} 个 Agent: ' + ', '.join(target['name'] for target in chosen))
+
+
+def filter_by_ids(targets: list[dict], ids: list[str], source: str) -> list[dict]:
+    known = {target['agent_id'] for target in targets}
+    unknown = [agent_id for agent_id in ids if agent_id not in known]
+    if unknown:
+        log(f'{source}中的 {", ".join(unknown)} 本机未检测到，已跳过')
+    return [target for target in targets if target['agent_id'] in ids]
+
+
+def select_targets(targets: list[dict], agents: str, save: bool, reset: bool) -> list[dict]:
+    """决定本次接入哪些 Agent，优先级 --agents > 配置文件 > 交互式选择（无终端报错）。
+
+    --reset 清空已保存的选择并重新交互选择，新结果覆盖写回配置。
+    """
+    if agents:
+        chosen = filter_by_ids(targets, [x.strip() for x in re.split(r'[,，]', agents) if x.strip()], '--agents')
+        if save:
+            save_config([target['agent_id'] for target in chosen])
+        announce(chosen, '按 --agents')
+        return chosen
+
+    reset_hint = False
+    if reset:
+        reset_hint = CONFIG_PATH.exists()
+    else:
+        configured = load_config()
+        if configured:
+            chosen = filter_by_ids(targets, configured, str(CONFIG_PATH))
+            if chosen:
+                announce(chosen, f'按 {CONFIG_PATH}')
+                return chosen
+            log(f'{CONFIG_PATH} 里记录的 Agent 本机都没检测到，重新选择')
+
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        reason = (
+            f'{CONFIG_PATH} 已存在，但当前不是交互终端，无法交互选择'
+            if CONFIG_PATH.exists()
+            else f'未找到 {CONFIG_PATH}，且当前不是交互终端（nohup / CI 场景）'
+        )
+        raise SystemExit(
+            f'{reason}。\n'
+            '请先在终端前台运行一次 xiaozhi-pro-connector 完成选择，或用 --agents claude,codex 指定。'
+        )
+
+    if reset_hint:
+        log('已清空之前的选择')
+    ids = prompt_targets(targets)
+    if not ids:
+        raise SystemExit('没有选择任何 Agent，启动结束')
+    save_config(ids)
+    chosen = [target for target in targets if target['agent_id'] in ids]
+    announce(chosen)
+    return chosen
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='小智Pro Agent Connector')
     parser.add_argument('--token', default=os.getenv('XIAOZHI_PRO_TOKEN', ''), help='小智Pro API Key')
+    parser.add_argument('--agents', default='', help='本次只接入指定 Agent，逗号分隔，如 claude,codex')
+    parser.add_argument('--save', action='store_true', help='与 --agents 同用，把选择写入配置文件')
+    parser.add_argument('--reset', action='store_true', help='清空已保存的 Agent 选择并重新选择')
     parser.add_argument('--command', default='', help=argparse.SUPPRESS)
     parser.add_argument('--cwd', default=os.getcwd(), help=argparse.SUPPRESS)
     parser.add_argument('--permission-mode', choices=['native', 'full'], default='native', help=argparse.SUPPRESS)
-    parser.add_argument('agent_args', nargs=argparse.REMAINDER, help='传给 Agent 的参数')
-    args = parser.parse_args()
+    args, extra = parser.parse_known_args()
+    # argparse 不再定义位置参数：`--` 之后的内容才是给 Agent 的透传，其余未识别参数一律报错
+    if extra and extra[0] == '--':
+        args.agent_args = extra[1:]
+    elif extra:
+        parser.error(
+            f"未知参数: {' '.join(extra)}。可用参数见 --help；"
+            '若要给 Agent 透传参数，写在 -- 之后，例如 xiaozhi-pro-connector -- --verbose'
+        )
+    else:
+        args.agent_args = []
     args.server = SERVER_URL
-    if args.agent_args and args.agent_args[0] == '--':
-        args.agent_args = args.agent_args[1:]
     if not args.token:
         parser.error('缺少 --token 或环境变量 XIAOZHI_PRO_TOKEN')
+    # 单独写 --save 没有任何作用，直接指出来，别让用户以为选择被保存了
+    if args.save and not args.agents:
+        parser.error('--save 需与 --agents 同用，例如 --agents claude,codex --save')
 
     if args.command:
         args.targets = [{
@@ -563,21 +712,35 @@ def parse_args() -> argparse.Namespace:
         if not args.targets:
             supported = ' / '.join(AGENT_LABELS[x] for x in AGENT_ORDER if x != 'acp')
             parser.error(f'未检测到可用 Agent，请先安装：{supported}')
+        # 先报探测结果，再按配置/交互筛选，否则这句日志里的数字会变成选中数
+        if len(args.targets) == 1:
+            first = args.targets[0]
+            log(f'自动探测到 ACP Agent: {first["name"]} ({first["command"]})')
+        else:
+            log(f'自动探测到 {len(args.targets)} 个 ACP Agent: {", ".join(t["name"] for t in args.targets)}')
+        args.targets = select_targets(args.targets, args.agents, args.save, args.reset)
+        if not args.targets:
+            parser.error('没有可接入的 Agent，请检查 --agents 或配置文件中的 ID 是否已安装')
+        return args
 
-    if len(args.targets) == 1:
-        first = args.targets[0]
-        log(f'自动探测到 ACP Agent: {first["name"]} ({first["command"]})')
-    else:
-        log(f'自动探测到 {len(args.targets)} 个 ACP Agent: {", ".join(t["name"] for t in args.targets)}')
+    first = args.targets[0]
+    log(f'自动探测到 ACP Agent: {first["name"]} ({first["command"]})')
     return args
 
 
-async def main() -> None:
+async def main() -> int:
     args = parse_args()
     tasks = []
+    connectors = []
     for target in args.targets:
-        one = argparse.Namespace(**vars(args), **target)
-        tasks.append(asyncio.create_task(Connector(one).run(), name=f'connector-{target["agent_id"]}'))
+        # 显式合并：command / agent_args 在 args 和 target 里都有，直接双星号传参会报
+        # “got multiple values for keyword argument”，这里让 target 覆盖 args
+        merged = vars(args).copy()
+        merged.update(target)
+        one = argparse.Namespace(**merged)
+        connector = Connector(one)
+        connectors.append(connector)
+        tasks.append(asyncio.create_task(connector.run(), name=f'connector-{target["agent_id"]}'))
     loop = asyncio.get_running_loop()
 
     def stop() -> None:
@@ -596,10 +759,12 @@ async def main() -> None:
     finally:
         for task in tasks:
             task.cancel()
+    # 鉴权类失败视为致命，进程返回非零，便于 nohup / 脚本判断
+    return 1 if any(connector.fatal for connector in connectors) else 0
 
 
 def cli() -> None:
-    asyncio.run(main())
+    sys.exit(asyncio.run(main()))
 
 
 if __name__ == '__main__':

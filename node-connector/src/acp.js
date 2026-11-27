@@ -6,7 +6,7 @@ import { VERSION } from './version.js';
 const PROTOCOL_VERSION = 1;
 const STDERR_LIMIT = 12000;
 const SESSION_TIMEOUT = 60000;
-const DEBUG_AGENT = process.env.XIAOZHI_CONNECTOR_DEBUG_AGENT === '1';
+const AGENT_DEBUG = process.env.AGENT_DEBUG === '1';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -63,7 +63,7 @@ export class ACPProcess {
     this.proc.stderr.on('data', (chunk) => {
       const text = chunk.toString('utf8');
       this.stderrTail = (this.stderrTail + text).slice(-STDERR_LIMIT);
-      if (DEBUG_AGENT) {
+      if (AGENT_DEBUG) {
         for (const line of text.split(/\r?\n/).filter(Boolean)) log(`agent: ${line}`);
       }
     });
@@ -80,6 +80,11 @@ export class ACPProcess {
     if (result?.protocolVersion !== PROTOCOL_VERSION) {
       throw new Error(`ACP 协议版本不兼容: ${result?.protocolVersion}`);
     }
+    // 每次新进程都要重建 session，否则重连后会沿用上一个已退出进程的 sessionId
+    this.sessionId = null;
+    this.currentText = [];
+    this.activeMessageId = null;
+    this.activeDeviceId = '';
     log('ACP initialize 完成');
   }
 
@@ -173,7 +178,7 @@ export class ACPProcess {
       this._handleMessage(message);
     } catch (err) {
       // Agent 回的消息格式意外时只记日志，绝不能让进程崩掉
-      log(`${DEBUG_AGENT ? 'agent' : 'ACP'} 消息处理异常: ${err.message}`);
+      log(`ACP 消息处理异常: ${err.message}`);
     }
   }
 
@@ -216,10 +221,11 @@ export class ACPProcess {
   }
 
   _handleUpdate(params) {
-    if (!this.onNotification) return;
     const update = params.update || {};
+    // _extractText 必须无条件调用，它负责把 agent_message_chunk 累积进 currentText，
+    // 最终回复就靠它；只有「转发流式碎片」这一步是可选的
     const text = this._extractText(update);
-    if (!text) return;
+    if (!text || !this.onNotification) return;
     Promise.resolve(
       this.onNotification({
         type: 'update',

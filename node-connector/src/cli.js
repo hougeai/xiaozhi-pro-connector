@@ -1,5 +1,6 @@
 import { AGENT_LABELS, AGENT_ORDER, collectTargets } from './detection.js';
 import { Connector } from './connector.js';
+import { selectTargets } from './config.js';
 import { log } from './log.js';
 import { VERSION } from './version.js';
 const SERVER = 'wss://api.qlcloud.top/xzp';
@@ -8,9 +9,19 @@ const HELP = `Usage: xiaozhi-pro-connector [options]
 
 Options:
   --token <token>          小智Pro API Key，也可用 XIAOZHI_PRO_TOKEN
+  --agents <a,b>           本次只接入指定 Agent（如 claude,codex），配合 --save 写入配置
+  --save                   与 --agents 同用，把选择结果存到配置文件
+  --reset                  清空已保存的 Agent 选择并重新选择
+  -- <args>                分隔符之后的参数原样透传给 Agent
   -h, --help               显示帮助
   -v, --version            显示版本
+
+首次运行会列出探测到的 Agent 让你选择，结果写入 ~/.xiaozhi-pro/connector.json，
+之后直接启动即按配置接入；nohup 等无终端场景需已有配置或用 --agents。
 `;
+
+const BOOL_FLAGS = { '--save': 'save', '--reset': 'reset', '--help': 'help', '--version': 'version', '-h': 'help', '-v': 'version' };
+const VALUE_FLAGS = { '--token': 'token', '--agents': 'agents', '--cwd': 'cwd', '--permission-mode': 'permission_mode', '--command': 'command' };
 
 function parseArgs(argv) {
   const opts = {
@@ -20,42 +31,51 @@ function parseArgs(argv) {
     permission_mode: 'native',
     command: '',
     agentArgs: [],
+    agents: '',
+    save: false,
+    reset: false,
     help: false,
     version: false,
   };
 
+  const unknown = [];
+  let passthrough = false;
+
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
+    // `--` 之后的内容原样交给 Agent，这是唯一的透传通道
+    if (passthrough) {
+      opts.agentArgs.push(arg);
+      continue;
+    }
     if (arg === '--') {
-      opts.agentArgs.push(...argv.slice(i + 1));
-      break;
-    }
-    if (arg === '-h' || arg === '--help') {
-      opts.help = true;
+      passthrough = true;
       continue;
     }
-    if (arg === '-v' || arg === '--version') {
-      opts.version = true;
+    if (BOOL_FLAGS[arg]) {
+      opts[BOOL_FLAGS[arg]] = true;
       continue;
     }
-    if (arg.startsWith('--')) {
-      let [key, value] = arg.slice(2).split('=', 2);
-      if (value === undefined) {
-        value = argv[++i];
-      }
-      switch (key) {
-        case 'token': opts.token = value; break;
-        case 'cwd': opts.cwd = value; break;
-        case 'permission-mode': opts.permission_mode = value; break;
-        case 'command': opts.command = value; break;
-        default:
-          if (value !== undefined) i--;
-          opts.agentArgs.push(arg);
-          if (value !== undefined) opts.agentArgs.push(value);
-      }
+    const [name, inline] = arg.startsWith('--') ? arg.slice(2).split('=', 2) : [];
+    const key = `--${name}`;
+    if (VALUE_FLAGS[key]) {
+      const value = inline !== undefined ? inline : argv[++i];
+      if (value === undefined) throw new Error(`${key} 缺少参数值`);
+      opts[VALUE_FLAGS[key]] = value;
       continue;
     }
-    opts.agentArgs.push(arg);
+    // 未知参数直接报错，不再静默塞给 Agent：拼错参数会导致功能悄悄失效
+    unknown.push(arg);
+  }
+
+  if (unknown.length) {
+    throw new Error(
+      `未知参数: ${unknown.join(' ')}\n可用参数见 --help。若要给 Agent 透传参数，写在 -- 之后，例如 xiaozhi-pro-connector -- --verbose`,
+    );
+  }
+  // 单独写 --save 没有任何作用，直接指出来，别让用户以为选择被保存了
+  if (opts.save && !opts.agents && !opts.help && !opts.version) {
+    throw new Error('--save 需与 --agents 同用，例如 --agents claude,codex --save');
   }
   return opts;
 }
@@ -74,7 +94,13 @@ function buildTargets(opts) {
 }
 
 async function main() {
-  const opts = parseArgs(process.argv.slice(2));
+  let opts;
+  try {
+    opts = parseArgs(process.argv.slice(2));
+  } catch (err) {
+    console.error(err.message);
+    return 1;
+  }
   if (opts.help) {
     console.log(HELP);
     return 0;
@@ -101,13 +127,27 @@ async function main() {
     log(`自动探测到 ${targets.length} 个 ACP Agent: ${targets.map((t) => t.name).join(', ')}`);
   }
 
-  const connectors = targets.map((target) => new Connector({ ...opts, ...target }));
+  // 手动指定 --command 时是单 Agent 模式，不再走选择流程
+  let chosen;
+  try {
+    chosen = opts.command ? targets : await selectTargets(targets, opts);
+  } catch (err) {
+    // 选择环节的失败都是可预期的（无终端、没选任何 Agent），只打印提示，不输出调用栈
+    console.error(err.message);
+    return 1;
+  }
+  if (!chosen.length) {
+    console.error('没有可接入的 Agent，请检查 --agents 或配置文件中的 ID 是否已安装');
+    return 1;
+  }
+
+  const connectors = chosen.map((target) => new Connector({ ...opts, ...target }));
   const stop = () => connectors.forEach((connector) => connector.stop());
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);
 
   await Promise.allSettled(connectors.map((connector) => connector.run()));
-  return 0;
+  return connectors.some((connector) => connector.fatal) ? 1 : 0;
 }
 
 main().then((code) => {

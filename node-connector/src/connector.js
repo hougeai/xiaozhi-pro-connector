@@ -15,13 +15,17 @@ export class Connector {
     this.permissionMode = options.permission_mode || 'native';
     this.reconnectDelay = options.reconnect_delay || 5000;
     this.agent = new ACPProcess(options.command, options.agent_args, options.cwd, this.permissionMode, options.agent_env);
-    this.agent.onNotification = (payload) => this.send(payload);
+    // 不挂 onNotification，即不向服务端转发 ACP 的 session/update 流式碎片。
+    // 本场景只需要 Agent 的最终回复，服务端也会丢弃这些碎片（agent_gateway._message_loop 里 update 分支是 pass），
+    // 一个长回复能产生数百条无效 WS 消息。将来要做控制台流式打字效果时，
+    // 恢复这里的赋值，并在服务端把 update 写入对应 message_id 的记录即可。
     this.ws = null;
     this.queue = [];
     this.messageResolver = null;
     this.promptAbort = null;
     this.stopped = false;
     this.fatal = '';
+    this.authed = false;
   }
 
   async run() {
@@ -51,33 +55,35 @@ export class Connector {
     this.ws = ws;
     const abort = new AbortController();
     this.promptAbort = abort;
+    this.authed = false;
     log(`连接 Agent Gateway: ${this.server} agent_id=${this.agentId}`);
 
-    try {
-      await new Promise((resolve, reject) => {
-        const cleanup = () => {
-          ws.off('open', onOpen);
-          ws.off('error', onError);
-          ws.off('close', onClose);
-        };
-        const onOpen = () => {
-          cleanup();
-          resolve();
-        };
-        const onError = (err) => {
-          cleanup();
-          reject(err);
-        };
-        const onClose = () => {
-          cleanup();
-          reject(new Error('WebSocket 连接失败'));
-        };
-        ws.once('open', onOpen);
-        ws.once('error', onError);
-        ws.once('close', onClose);
-      });
-      log(`${this.agentId} 连接成功`);
+    // 关键：message 监听必须在握手前挂上。服务端 accept 后立即校验 token，
+    // auth_fail 可能在握手 Promise 还没 resolve 时就到达，此时若无监听器该帧会被直接丢弃，
+    // 表现是「密钥错误却只报连接断开并无限重连」。
+    let rejectMessageFailure;
+    const messageFailure = new Promise((_, reject) => {
+      rejectMessageFailure = reject;
+    });
+    const onMessage = (raw) => {
+      this._onMessage(raw.toString()).catch(rejectMessageFailure);
+    };
+    ws.on('message', onMessage);
 
+    try {
+      await Promise.race([
+        new Promise((resolve, reject) => {
+          ws.once('open', resolve);
+          ws.once('error', reject);
+          ws.once('close', () => reject(new Error('WebSocket 连接失败')));
+        }),
+        messageFailure,
+      ]);
+      // 握手完成不代表鉴权通过，「连接成功」等收到 auth_ok 再打
+      // register：向服务端自报身份与能力。连接归属其实已由 URL 上的 token + agent_id 确定，
+      // 服务端当前对 register 只 continue（见 agent_gateway._message_loop），
+      // 保留它是为了协议完整性，以及将来按 capabilities 做能力协商
+      // （delegation 委派 / permissions 权限确认 / nativeSessionHistory 会话历史复用）。
       await this.send({
         type: 'register',
         name: this.name,
@@ -87,27 +93,16 @@ export class Connector {
 
       this._startPromptWorker(abort.signal);
 
-      await new Promise((resolve, reject) => {
-        const onMessage = (raw) => {
-          this._onMessage(raw.toString()).catch(reject);
-        };
-        const onClose = () => {
-          ws.off('message', onMessage);
-          ws.off('error', onError);
-          resolve();
-        };
-        const onError = (err) => {
-          ws.off('message', onMessage);
-          ws.off('close', onClose);
-          reject(err);
-        };
-        ws.on('message', onMessage);
-        ws.on('close', onClose);
-        ws.on('error', onError);
-        if (this.stopped) ws.close();
-      });
+      await Promise.race([
+        new Promise((resolve, reject) => {
+          ws.once('close', resolve);
+          ws.once('error', reject);
+        }),
+        messageFailure,
+      ]);
       log(`${this.agentId} 连接断开`);
     } finally {
+      ws.off('message', onMessage);
       abort.abort();
       this.queue = [];
       if (this.messageResolver) {
@@ -131,11 +126,18 @@ export class Connector {
     }
     if (!data || typeof data !== 'object') return;
     const type = data.type;
-    if (type === 'auth_ok') return;
+    if (type === 'auth_ok') {
+      if (!this.authed) {
+        this.authed = true;
+        log(`${this.agentId} 连接成功`);
+      }
+      return;
+    }
     if (type === 'auth_fail') {
-      // agent_busy：该 Agent 已在其他机器接入，重试不可能成功，直接退出该 Agent 的连接循环
-      if (data.error === 'agent_busy') this.fatal = data.message || '该 Agent 已在其他机器接入';
-      throw new Error(data.message || '鉴权失败');
+      // 鉴权类失败（密钥无效、配额不足、该 Agent 已在其他机器接入）都不可能靠重试解决，
+      // 一律标记致命并退出该 Agent 的循环，避免无限重连和反复拉起子进程
+      this.fatal = data.message || `鉴权失败（${data.error || 'unknown'}）`;
+      throw new Error(this.fatal);
     }
     if (type === 'ping') {
       await this.send({ type: 'pong' });
@@ -153,7 +155,13 @@ export class Connector {
   }
 
   async send(payload) {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      // 回复与错误是有业务含义的消息，静默丢弃会让用户以为 Agent 没回，这里留一条日志
+      if (payload.type === 'response' || payload.type === 'error') {
+        log(`${this.agentId} 连接不可用，${payload.type} 未发送`);
+      }
+      return;
+    }
     this.ws.send(JSON.stringify(payload));
   }
 
@@ -214,7 +222,9 @@ export class Connector {
     this.agent.activeMessageId = messageId;
     this.agent.activeDeviceId = deviceId;
     this.agent.currentText = [];
-    log(`${this.agentId} 收到任务: message_id=${messageId} device_id=${deviceId || '-'}`);
+    // 换行换成空格再截，否则日志会被拆成多行难以阅读
+    const ask = text.replace(/[\r\n]+/g, ' ');
+    log(`${this.agentId} 收到任务: message_id=${messageId} device_id=${deviceId || '-'} text=${ask.slice(0, 10)}${ask.length > 10 ? '...' : ''}`);
 
     const result = await this.agent.request('session/prompt', {
       sessionId,
@@ -241,8 +251,8 @@ export class Connector {
       });
       return;
     }
-    const preview = finalText.replace(/\s+/g, ' ').slice(0, 10);
-    log(`${this.agentId} 回复完成: message_id=${messageId} response=${preview}...`);
+    const answer = finalText.replace(/[\r\n]+/g, ' ');
+    log(`${this.agentId} 回复完成: message_id=${messageId} response=${answer.slice(0, 10)}${answer.length > 10 ? '...' : ''}`);
     await this.send({
       type: 'response',
       text: finalText,
